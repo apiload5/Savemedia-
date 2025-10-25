@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # --- SECURITY CONFIGURATION: CORS ---
-ALLOWED_ORIGIN = "https://crispy0921.blogspot.com"
+ALLOWED_ORIGIN = "https://www.savemedia.online"
 CORS(app, origins=[ALLOWED_ORIGIN])
 # ---
 
@@ -244,10 +244,5 @@ def home():
 
 # --- (The route definitions are omitted for brevity but should be included in your final code) ---
 if __name__ == '__main__':
-    logger.info("🚀 Universal Downloader Started (FFmpeg Static Binary Mode)")
-    # Check if the binary exists on startup
-    if not os.path.exists(FFMPEG_PATH):
-        logger.error(f"FATAL: FFmpeg binary not found at {FFMPEG_PATH}. Please follow step 1.")
-    else:
-        logger.info("FFmpeg binary found and integrated.")
-    app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000), debug=True)
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=False)
