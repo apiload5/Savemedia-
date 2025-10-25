@@ -1,248 +1,446 @@
-from flask import Flask, request, jsonify, send_file
-import o
-from flask_cors import CORS, cross_origin
-import yt_dlp
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import tempfile
-import uuid
+import requests
+import yt_dlp
+from PIL import Image
+import io
+import base64
 import logging
+import time
+import gc
 import re
-import shutil
+from functools import wraps
+from urllib.parse import urlparse
+import json
 
-# Configuration
-logging.basicConfig(level=logging.INFO)
+# AWS Elastic Beanstalk compatible initialization
+application = Flask(__name__)
+CORS(application, origins="*", methods=["GET", "POST", "OPTIONS"])
+
+# Configure logging for AWS CloudWatch
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
+# Rate limiting storage
+request_counts = {}
 
-# --- SECURITY CONFIGURATION: CORS ---
-ALLOWED_ORIGIN = "https://www.savemedia.online"
-CORS(app, origins=[ALLOWED_ORIGIN])
-# ---
+def rate_limit(max_requests=10, window=60):
+    """Rate limiting decorator"""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            client_ip = request.remote_addr or 'unknown'
+            current_time = time.time()
+            
+            if client_ip not in request_counts:
+                request_counts[client_ip] = []
+            
+            # Clean old requests
+            request_counts[client_ip] = [
+                req_time for req_time in request_counts[client_ip]
+                if current_time - req_time < window
+            ]
+            
+            if len(request_counts[client_ip]) >= max_requests:
+                logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+                return jsonify({"error": "Rate limit exceeded. Try again later."}), 429
+            
+            request_counts[client_ip].append(current_time)
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
 
-# --- Quality Configuration ---
-ALLOWED_VIDEO_QUALITIES = [1080, 720, 480, 360, 240, 144]
+def cleanup_memory():
+    """Force garbage collection"""
+    gc.collect()
 
-# --- FFmpeg Path: The path to the static binary we placed in the 'bin' folder ---
-FFMPEG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ffmpeg')
+def is_valid_url(url):
+    """Validate URL format"""
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except:
+        return False
 
-class UniversalDownloaderFixed:
-    def __init__(self):
-        # Now we tell yt-dlp where to find the external FFmpeg
-        self.ydl_opts = {
-            'quiet': False,
-            'no_warnings': False,
-            'external_downloader_args': ['-movflags', 'faststart'],
-            # IMPORTANT: Set the path to the FFmpeg binary!
-            'ffmpeg_location': FFMPEG_PATH 
-        }
+def detect_platform(url):
+    """Detect social media platform from URL"""
+    url = url.lower()
+    
+    if 'youtube.com' in url or 'youtu.be' in url:
+        return 'youtube'
+    elif 'instagram.com' in url:
+        return 'instagram'
+    elif 'facebook.com' in url or 'fb.watch' in url:
+        return 'facebook'
+    elif 'twitter.com' in url or 'x.com' in url:
+        return 'twitter'
+    elif 'tiktok.com' in url:
+        return 'tiktok'
+    elif 'linkedin.com' in url:
+        return 'linkedin'
+    elif 'pinterest.com' in url:
+        return 'pinterest'
+    elif 'reddit.com' in url:
+        return 'reddit'
+    elif 'vimeo.com' in url:
+        return 'vimeo'
+    elif 'dailymotion.com' in url:
+        return 'dailymotion'
+    else:
+        return 'generic'
 
-    # --- (Validation and Search methods remain UNCHANGED) ---
-    def validate_url(self, url):
-        """Validate if URL is supported by yt-dlp"""
-        if not url or not isinstance(url, str):
-            return False
-        try:
-            with yt_dlp.YoutubeDL(self.ydl_opts) as ydl:
-                ydl.extract_info(url, download=False, process=False)
-                return True
-        except:
-            return False
-
-    def search_videos(self, query):
-        """Search videos on YouTube using yt-dlp's search functionality"""
-        try:
-            if not query: return []
-            ydl_opts = self.ydl_opts.copy()
-            ydl_opts.update({
-                'quiet': True,
-                'default_search': 'ytsearch10', 
-                'extract_flat': 'in_playlist',
-            })
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch10:{query}", download=False)
-                results = []
-                if info and 'entries' in info:
-                    for entry in info['entries']:
-                        if entry:
-                            results.append({
-                                'title': entry.get('title', 'Unknown Title'),
-                                'url': entry.get('url', entry.get('webpage_url')),
-                                'duration': self._format_duration(entry.get('duration')),
-                                'thumbnail': entry.get('thumbnail'),
-                                'uploader': entry.get('uploader'),
-                                'id': entry.get('id')
-                            })
-                return results
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            return []
-
-
-    def get_video_info(self, url):
-        """Get video information and generate download links for all required qualities"""
-        try:
-            logger.info(f"Fetching info for: {url}")
-
-            ydl_opts = self.ydl_opts.copy()
-            ydl_opts.update({
-                'quiet': True,
-                'extract_flat': False,
-            })
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if not info:
-                    raise Exception("Video not found or inaccessible")
-
-                video_data = {
-                    'success': True,
-                    'title': info.get('title', 'Unknown Title'),
-                    'thumbnail': info.get('thumbnail', ''),
-                    'extractor': info.get('extractor', 'Unknown Platform'),
-                    'formats': [],
-                }
-
-                # --- Format Generation Logic (Re-enabling Merging) ---
-                video_formats = []
-
-                for height in sorted(ALLOWED_VIDEO_QUALITIES, reverse=True):
-
-                    # COMPLEX FORMAT STRING FOR MERGING (Requires FFmpeg)
-                    # bestvideo[height<=H][ext=mp4] + bestaudio[ext=m4a]/best[height<=H]
-                    format_string = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/{height}p/best[height<={height}]"
-
-                    custom_id = f'{height}p_mp4_merged'
-
-                    video_formats.append({
-                        'id': custom_id,
-                        # Now we can promise Video + Audio
-                        'name': f'Video + Audio ({height}p MP4)', 
-                        'format_id': format_string, 
-                        'quality': f'{height}p',
-                        'ext': 'mp4',
-                        'size': 'Estimating...', # Size is hard to estimate before merging
-                    })
-
-                # 2. Audio Only (MP3 Conversion is now possible!)
-                audio_format = {
-                    'id': 'bestaudio_mp3_converted',
-                    'name': 'Audio Only (MP3 - High Quality)',
-                    'format_id': 'bestaudio/best', # Use the actual ytdlp audio format string
-                    'quality': 'Audio',
-                    'size': 'Estimating...',
-                    'ext': 'mp3' 
-                }
-
-                video_data['formats'] = video_formats + [audio_format]
-                return video_data
-
-        except Exception as e:
-            logger.error(f"Info extraction failed: {e}")
-            raise Exception(f"Could not fetch video info: {str(e)}")
-
-    def download_video(self, url, format_id):
-        """Download video/audio using FFmpeg for merging and conversion"""
-        filepath = None
-        temp_dir = tempfile.gettempdir()
-
-        try:
-            file_id = uuid.uuid4().hex
-            filename_base = f"download_{file_id}"
-
-            is_audio_conversion = (format_id == 'bestaudio/best')
-
-            ydl_opts = self.ydl_opts.copy()
-            ydl_opts.update({
-                'outtmpl': os.path.join(temp_dir, filename_base + '.%(ext)s'),
-                'format': format_id,
-                'postprocessors': [],
-                'merge_output_format': 'mp4', # Default merge to MP4
-            })
-
-            # 1. Audio Conversion to MP3
-            if is_audio_conversion:
-                ydl_opts.update({
-                    # Use FFmpeg to convert to MP3
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192', 
-                    }],
-                    'outtmpl': os.path.join(temp_dir, filename_base + '.mp3'),
-                })
-
-            # 2. Video with Merging (FFmpeg required)
-            else:
-                # Ensure the merge output is MP4
-                ydl_opts['postprocessors'].append(
-                    {'key': 'FFmpegVideoConvertor', 'preferedformat': 'mp4'}
-                )
-                ydl_opts['outtmpl'] = os.path.join(temp_dir, filename_base + '.mp4')
-
-            logger.info(f"Starting download: {url} with format: {format_id}")
-
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-
-            # --- Find the final file ---
-            download_ext = 'mp3' if is_audio_conversion else 'mp4'
-
-            # Find the downloaded file based on the base name and expected extension
-            downloaded_file = None
-            for f in os.listdir(temp_dir):
-                if f.startswith(filename_base) and f.endswith(f'.{download_ext}'):
-                    downloaded_file = os.path.join(temp_dir, f)
-                    break
-
-            if not downloaded_file or not os.path.exists(downloaded_file):
-                raise Exception("Downloaded file not found. Check FFmpeg path and permissions.")
-
-            filepath = downloaded_file
-            if os.path.getsize(filepath) == 0:
-                raise Exception("Downloaded file is empty")
-
-            logger.info(f"Download completed: {filepath}")
-            return filepath
-
-        except Exception as e:
-            if filepath and os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                except:
-                    pass
-            # Provide an error if FFmpeg failed to run
-            if 'ffprobe' in str(e) or 'ffmpeg' in str(e):
-                 raise Exception(f"Download failed: FFmpeg execution error. Check if '{FFMPEG_PATH}' exists and has executable permission (chmod +x).")
-
-            raise Exception(f"Download failed: {str(e)}")
-
-    # --- Helper methods ---
-    def _format_duration(self, seconds):
-        if not seconds: return "Unknown"
-        minutes = seconds // 60
-        seconds = seconds % 60
-        return f"{minutes}:{seconds:02d}"
-
-# Initialize downloader
-downloader = UniversalDownloaderFixed()
-
-# --- ROUTES (Remain the same) ---
-
-@app.route('/')
-def home():
+# AWS Health Check Endpoint
+@application.route('/health')
+def health_check():
+    """Health check for AWS Load Balancer"""
     return jsonify({
-        'message': 'Universal Downloader API (FFmpeg Static Binary)',
-        'status': 'running',
-        'security': f'Only accessible from {ALLOWED_ORIGIN}',
-        'supported_sites': '1000+ sites (via yt-dlp)',
-        'note': f'FFmpeg is integrated from: {FFMPEG_PATH}. All qualities should now include audio.',
-        'available_endpoints': ['/api/info', '/api/download', '/api/search']
+        "status": "healthy",
+        "timestamp": time.time(),
+        "service": "SaveMedia API"
+    }), 200
+
+# Root endpoint
+@application.route('/')
+def home():
+    """API information endpoint"""
+    return jsonify({
+        "message": "SaveMedia API - Multi-Platform Media Downloader",
+        "version": "2.0",
+        "status": "active",
+        "supported_platforms": [
+            "YouTube", "Instagram", "Facebook", "Twitter/X", 
+            "TikTok", "LinkedIn", "Pinterest", "Reddit", 
+            "Vimeo", "Dailymotion"
+        ],
+        "endpoints": {
+            "health": "/health",
+            "download": "/download",
+            "info": "/info",
+            "platforms": "/platforms"
+        },
+        "usage": {
+            "method": "POST",
+            "body": {"url": "media_url"},
+            "rate_limit": "10 requests per minute"
+        }
     })
 
-# (Rest of the /api/info, /api/download, and /api/search routes remain UNCHANGED)
+@application.route('/platforms')
+def supported_platforms():
+    """List all supported platforms"""
+    return jsonify({
+        "supported_platforms": {
+            "youtube": {
+                "name": "YouTube",
+                "formats": ["mp4", "webm", "mp3"],
+                "example": "https://youtube.com/watch?v=..."
+            },
+            "instagram": {
+                "name": "Instagram",
+                "formats": ["mp4", "jpg"],
+                "example": "https://instagram.com/p/..."
+            },
+            "facebook": {
+                "name": "Facebook",
+                "formats": ["mp4"],
+                "example": "https://facebook.com/watch?v=..."
+            },
+            "twitter": {
+                "name": "Twitter/X",
+                "formats": ["mp4", "jpg"],
+                "example": "https://twitter.com/user/status/..."
+            },
+            "tiktok": {
+                "name": "TikTok",
+                "formats": ["mp4"],
+                "example": "https://tiktok.com/@user/video/..."
+            },
+            "vimeo": {
+                "name": "Vimeo",
+                "formats": ["mp4"],
+                "example": "https://vimeo.com/..."
+            }
+        }
+    })
 
-# --- (The route definitions are omitted for brevity but should be included in your final code) ---
+@application.route('/info', methods=['POST'])
+@rate_limit(max_requests=15, window=60)
+def get_media_info():
+    """Get media information without downloading"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        url = data['url'].strip()
+        if not is_valid_url(url):
+            return jsonify({"error": "Invalid URL format"}), 400
+        
+        platform = detect_platform(url)
+        logger.info(f"Getting info for {platform} URL: {url}")
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'socket_timeout': 30,
+            'retries': 3,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            result = {
+                "platform": platform,
+                "title": info.get('title', 'Unknown'),
+                "duration": info.get('duration'),
+                "uploader": info.get('uploader', 'Unknown'),
+                "view_count": info.get('view_count'),
+                "upload_date": info.get('upload_date'),
+                "description": info.get('description', '')[:200] + '...' if info.get('description') else '',
+                "thumbnail": info.get('thumbnail'),
+                "formats_available": len(info.get('formats', [])),
+                "url": url
+            }
+            
+            cleanup_memory()
+            return jsonify(result)
+            
+    except Exception as e:
+        logger.error(f"Info extraction error: {str(e)}")
+        cleanup_memory()
+        return jsonify({
+            "error": "Failed to extract media information",
+            "details": str(e)
+        }), 500
+
+@application.route('/download', methods=['POST'])
+@rate_limit(max_requests=5, window=60)
+def download_media():
+    """Universal media downloader for all platforms"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        url = data['url'].strip()
+        quality = data.get('quality', 'best')
+        format_type = data.get('format', 'mp4')
+        
+        if not is_valid_url(url):
+            return jsonify({"error": "Invalid URL format"}), 400
+        
+        platform = detect_platform(url)
+        logger.info(f"Downloading from {platform}: {url}")
+        
+        # Platform-specific configurations
+        ydl_opts = {
+            'format': 'best[ext=mp4]/best',
+            'outtmpl': '/tmp/%(title)s.%(ext)s',
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'retries': 3,
+            'extract_flat': False,
+        }
+        
+        # Quality settings
+        if quality == 'high':
+            ydl_opts['format'] = 'best[height<=1080]/best'
+        elif quality == 'medium':
+            ydl_opts['format'] = 'best[height<=720]/best'
+        elif quality == 'low':
+            ydl_opts['format'] = 'worst[height>=360]/worst'
+        
+        # Audio only
+        if format_type == 'mp3':
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
+        
+        # Platform-specific optimizations
+        if platform == 'instagram':
+            ydl_opts['format'] = 'best'
+        elif platform == 'twitter':
+            ydl_opts['format'] = 'best[ext=mp4]'
+        elif platform == 'tiktok':
+            ydl_opts['format'] = 'best[ext=mp4]/best'
+        elif platform == 'facebook':
+            ydl_opts['format'] = 'best[ext=mp4]/best'
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Extract info first
+            info = ydl.extract_info(url, download=False)
+            
+            if not info:
+                return jsonify({"error": "Could not extract media information"}), 400
+            
+            # Get download URL
+            if 'url' in info:
+                download_url = info['url']
+            elif 'formats' in info and info['formats']:
+                # Find best format
+                formats = info['formats']
+                best_format = None
+                
+                for fmt in formats:
+                    if fmt.get('url') and fmt.get('ext') == 'mp4':
+                        best_format = fmt
+                        break
+                
+                if not best_format and formats:
+                    best_format = formats[-1]
+                
+                download_url = best_format['url'] if best_format else None
+            else:
+                return jsonify({"error": "No downloadable formats found"}), 400
+            
+            if not download_url:
+                return jsonify({"error": "Could not get download URL"}), 400
+            
+            result = {
+                "success": True,
+                "platform": platform,
+                "title": info.get('title', 'Unknown'),
+                "download_url": download_url,
+                "duration": info.get('duration'),
+                "uploader": info.get('uploader', 'Unknown'),
+                "thumbnail": info.get('thumbnail'),
+                "format": info.get('ext', 'mp4'),
+                "quality": quality,
+                "file_size": info.get('filesize') or info.get('filesize_approx'),
+                "view_count": info.get('view_count'),
+                "upload_date": info.get('upload_date')
+            }
+            
+            cleanup_memory()
+            logger.info(f"Successfully processed {platform} download: {info.get('title', 'Unknown')}")
+            return jsonify(result)
+            
+    except yt_dlp.DownloadError as e:
+        logger.error(f"yt-dlp download error: {str(e)}")
+        cleanup_memory()
+        return jsonify({
+            "error": "Download failed",
+            "details": "Media may be private, deleted, or not supported",
+            "platform": platform if 'platform' in locals() else 'unknown'
+        }), 400
+        
+    except Exception as e:
+        logger.error(f"Unexpected download error: {str(e)}")
+        cleanup_memory()
+        return jsonify({
+            "error": "An unexpected error occurred",
+            "details": str(e)
+        }), 500
+
+# Legacy endpoints for backward compatibility
+@application.route('/youtube', methods=['POST'])
+@rate_limit(max_requests=5, window=60)
+def youtube_download():
+    """YouTube-specific endpoint (legacy)"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        # Redirect to universal download endpoint
+        request.json = data
+        return download_media()
+        
+    except Exception as e:
+        logger.error(f"YouTube download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@application.route('/instagram', methods=['POST'])
+@rate_limit(max_requests=5, window=60)
+def instagram_download():
+    """Instagram-specific endpoint (legacy)"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        # Redirect to universal download endpoint
+        request.json = data
+        return download_media()
+        
+    except Exception as e:
+        logger.error(f"Instagram download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@application.route('/facebook', methods=['POST'])
+@rate_limit(max_requests=5, window=60)
+def facebook_download():
+    """Facebook-specific endpoint (legacy)"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        # Redirect to universal download endpoint
+        request.json = data
+        return download_media()
+        
+    except Exception as e:
+        logger.error(f"Facebook download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@application.route('/twitter', methods=['POST'])
+@rate_limit(max_requests=5, window=60)
+def twitter_download():
+    """Twitter-specific endpoint (legacy)"""
+    try:
+        data = request.get_json()
+        if not data or 'url' not in data:
+            return jsonify({"error": "URL is required"}), 400
+        
+        # Redirect to universal download endpoint
+        request.json = data
+        return download_media()
+        
+    except Exception as e:
+        logger.error(f"Twitter download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+# Error handlers
+@application.errorhandler(404)
+def not_found(error):
+    return jsonify({
+        "error": "Endpoint not found",
+        "message": "Please check the API documentation at the root endpoint"
+    }), 404
+
+@application.errorhandler(405)
+def method_not_allowed(error):
+    return jsonify({
+        "error": "Method not allowed",
+        "message": "Please use POST method for download endpoints"
+    }), 405
+
+@application.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal server error: {str(error)}")
+    return jsonify({
+        "error": "Internal server error",
+        "message": "Please try again later"
+    }), 500
+
+# AWS compatible main block
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Local development
+    port = int(os.environ.get('PORT', 5000))
+    application.run(debug=True, host='0.0.0.0', port=port)
+else:
+    # Production on AWS
+    application.debug = False
+    logger.info("SaveMedia API started in production mode")
