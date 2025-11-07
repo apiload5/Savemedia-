@@ -9,7 +9,7 @@ import os
 # -----------------------
 # Configuration
 # -----------------------
-API_KEY = os.getenv("API_KEY", "2580421-amir-karachi")
+API_KEY = os.getenv("API_KEY")
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "savemedia.online")
 
 # -----------------------
