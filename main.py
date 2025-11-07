@@ -1,94 +1,77 @@
-# main.py
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 import yt_dlp
-import os
 
-# -----------------------
-# Configuration
-# -----------------------
-API_KEY = os.getenv("API_KEY")
-ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "savemedia.online")
-
-# -----------------------
-# FastAPI setup
-# -----------------------
+# --- FastAPI App Setup ---
 app = FastAPI(
     title="SaveMedia Backend",
-    version="1.2",
-    description="Secure and ultra-lightweight FastAPI backend for savemedia.online — powered by yt_dlp."
+    version="1.1",
+    description="Optimized FastAPI backend for SaveMedia.online — direct downloadable formats only."
 )
 
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
+# --- Restricted CORS setup ---
+allowed_origins = [
+    "https://savemedia.online",
+    "https://www.savemedia.online",
+    "https://ticnotester.blogspot.com",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[f"https://{ALLOWED_DOMAIN}", f"http://{ALLOWED_DOMAIN}"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------
-# API Endpoint
-# -----------------------
-@app.post("/api/extract")
-@limiter.limit("2/minute")  # ⏳ Limit per IP: 2 requests per minute
-async def extract_video(request: Request):
-    data = await request.json()
-    url = data.get("url")
+# --- Root route (for test/health check) ---
+@app.get("/")
+def home():
+    return {"message": "✅ SaveMedia Backend running successfully on Railway!"}
 
-    # 🧩 1. URL validation
-    if not url:
-        raise HTTPException(status_code=400, detail="URL is required")
 
-    # 🔐 2. Origin protection
-    origin = request.headers.get("origin")
-    if origin not in [f"https://{ALLOWED_DOMAIN}", f"http://{ALLOWED_DOMAIN}"]:
-        raise HTTPException(status_code=403, detail="Unauthorized origin")
-
-    # 🔑 3. Optional API key check
-    key = request.headers.get("x-api-key")
-    if key and key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid API Key")
-
-    # ⚙️ 4. Extract video info using yt_dlp (without downloading)
+# --- Optimized Download Info Endpoint ---
+@app.get("/download")
+def download_video(url: str = Query(..., description="Video URL to extract downloadable info")):
     try:
         ydl_opts = {
-            "skip_download": True,
             "quiet": True,
-            "nocheckcertificate": True,
-            "ignoreerrors": True,
+            "skip_download": True,
+            "forcejson": True,
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-        if not info:
-            raise HTTPException(status_code=400, detail="Unable to extract info")
-
-        # 🧠 If playlist, get first entry
-        if "entries" in info:
-            info = info["entries"][0]
-
-        # 🎬 Build response
-        formats = []
-        for f in info.get("formats", []):
-            if f.get("url") and f.get("ext"):
-                formats.append({
+            # ✅ Filter only progressive formats (audio + video combined)
+            progressive_formats = [
+                {
+                    "format_id": f.get("format_id"),
                     "ext": f.get("ext"),
-                    "quality": f.get("format_note"),
+                    "format_note": f.get("format_note"),
                     "filesize": f.get("filesize"),
                     "url": f.get("url"),
-                })
+                    "resolution": f.get("resolution") or f"{f.get('height')}p",
+                }
+                for f in info.get("formats", [])
+                if f.get("url")
+                and f.get("acodec") != "none"
+                and f.get("vcodec") != "none"
+            ]
 
-        return {
-            "title": info.get("title"),
-            "thumbnail": info.get("thumbnail"),
-            "formats": formats
-        }
+            return {
+                "title": info.get("title"),
+                "thumbnail": info.get("thumbnail"),
+                "uploader": info.get("uploader"),
+                "duration": info.get("duration"),
+                "formats": progressive_formats,
+            }
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+        return {"error": str(e)}
+
+
+# --- Local run (for debugging only) ---
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8080)
