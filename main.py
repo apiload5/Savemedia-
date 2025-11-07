@@ -13,7 +13,7 @@ app = FastAPI(
 allowed_origins = [
     "https://savemedia.online",
     "https://www.savemedia.online",
-    "https://ticnotester.blogspot.com",
+    "https://crispy0921.blogspot.com",
 ]
 
 app.add_middleware(
