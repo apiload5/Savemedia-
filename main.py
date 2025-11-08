@@ -5,15 +5,9 @@ from slowapi.util import get_remote_address
 import yt_dlp
 import os
 
-# -----------------------
-# Config
-# -----------------------
 API_KEY = os.getenv("API_KEY")
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "savemedia.online")
 
-# -----------------------
-# App setup
-# -----------------------
 app = FastAPI(
     title="SaveMedia Backend",
     version="1.3",
@@ -23,31 +17,23 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
-# ✅ CORS — temporarily allow all for Blogger testing
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later you can restrict to ["https://savemedia.online"]
+    allow_origins=["*"],  # allow all during testing
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------
-# Root check route
-# -----------------------
 @app.get("/")
 def home():
     return {"status": "ok", "message": "SaveMedia Zero-Load Backend running fine"}
 
-# -----------------------
-# Extract route
-# -----------------------
 @app.post("/api/extract")
-@limiter.limit("2/minute")  # ⏳ 2 requests per IP per minute
+@limiter.limit("2/minute")
 async def extract_video(request: Request):
     data = await request.json()
     url = data.get("url")
-
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
@@ -88,8 +74,10 @@ async def extract_video(request: Request):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
-        if __name__ == "__main__":
+
+
+# ✅ Ye lines bilkul left me honi chahiye (global level pe, except ke andar nahi)
+if __name__ == "__main__":
     import uvicorn
     print("✅ Routes loaded:", [r.path for r in app.router.routes])
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
-            
