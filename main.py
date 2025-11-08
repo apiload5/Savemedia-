@@ -88,3 +88,8 @@ async def extract_video(request: Request):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+        if __name__ == "__main__":
+    import uvicorn
+    print("✅ Routes loaded:", [r.path for r in app.router.routes])
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+            
