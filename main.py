@@ -5,35 +5,50 @@ from slowapi.util import get_remote_address
 import yt_dlp
 import os
 
-API_KEY = os.getenv("API_KEY")
+# -----------------------
+# Config
+# -----------------------
+API_KEY = os.getenv("API_KEY", "2580421-amir-karachi")
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "savemedia.online")
 
+# -----------------------
+# App setup
+# -----------------------
 app = FastAPI(
     title="SaveMedia Backend",
     version="1.3",
     description="Fast, lightweight backend using yt_dlp for SaveMedia.online",
 )
 
+# Rate Limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
+# ✅ Allow CORS for all during testing (Blogger compatible)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all during testing
+    allow_origins=["*"],  # later restrict to ["https://savemedia.online"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# -----------------------
+# Root check route
+# -----------------------
 @app.get("/")
 def home():
     return {"status": "ok", "message": "SaveMedia Zero-Load Backend running fine"}
 
+# -----------------------
+# Extract route
+# -----------------------
 @app.post("/api/extract")
-@limiter.limit("2/minute")
+@limiter.limit("2/minute")  # ⏳ limit: 2 requests per minute per IP
 async def extract_video(request: Request):
     data = await request.json()
     url = data.get("url")
+
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
@@ -76,7 +91,7 @@ async def extract_video(request: Request):
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
-# ✅ Ye lines bilkul left me honi chahiye (global level pe, except ke andar nahi)
+# ✅ Make sure this is NOT indented — must be at the very left
 if __name__ == "__main__":
     import uvicorn
     print("✅ Routes loaded:", [r.path for r in app.router.routes])
