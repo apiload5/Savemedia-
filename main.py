@@ -1,54 +1,45 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
-from slowapi.util import get_remote_address
+from slowapi.util import get_forwarded_ip 
 import yt_dlp
 import os
 
-# -----------------------
-# Config
-# -----------------------
-API_KEY = os.getenv("API_KEY", "2580421-amir-karachi")
+# API_KEY ab istemaal nahi hoga
+# API_KEY = os.getenv("API_KEY") 
+
 ALLOWED_DOMAIN = os.getenv("ALLOWED_DOMAIN", "savemedia.online")
 
-# -----------------------
-# App setup
-# -----------------------
 app = FastAPI(
     title="SaveMedia Backend",
     version="1.3",
     description="Fast, lightweight backend using yt_dlp for SaveMedia.online",
 )
 
-# Rate Limiter
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_forwarded_ip) 
 app.state.limiter = limiter
 
-# ✅ Allow CORS for all during testing (Blogger compatible)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # later restrict to ["https://savemedia.online"]
+    # FIX: Sirf ALLOWED_DOMAIN ko allow kiya gaya
+    allow_origins=[f"https://{ALLOWED_DOMAIN}", f"http://{ALLOWED_DOMAIN}"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------
-# Root check route
-# -----------------------
 @app.get("/")
 def home():
     return {"status": "ok", "message": "SaveMedia Zero-Load Backend running fine"}
 
-# -----------------------
-# Extract route
-# -----------------------
 @app.post("/api/extract")
-@limiter.limit("2/minute")  # ⏳ limit: 2 requests per minute per IP
+@limiter.limit("2/minute")
 async def extract_video(request: Request):
+    
+    # API Key check hata diya gaya hai
+
     data = await request.json()
     url = data.get("url")
-
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
@@ -79,6 +70,7 @@ async def extract_video(request: Request):
                     "quality": f.get("format_note"),
                     "filesize": f.get("filesize"),
                     "url": f.get("url"),
+                    "format_id": f.get("format_id"), 
                 })
 
         return {
@@ -91,8 +83,7 @@ async def extract_video(request: Request):
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
-# ✅ Make sure this is NOT indented — must be at the very left
 if __name__ == "__main__":
     import uvicorn
-    print("✅ Routes loaded:", [r.path for r in app.router.routes])
+    print("✅ Routes loaded:", [r.path for r in app.router.routes]) 
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
