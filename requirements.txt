@@ -1,5 +1,7 @@
 fastapi
-uvicorn
-gunicorn
-slowapi
-yt-dlp
+uvicorn[standard]
+python-multipart
+Pillow
+img2pdf
+PyMuPDF
+reportlab
