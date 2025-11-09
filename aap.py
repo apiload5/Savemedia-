@@ -13,7 +13,8 @@ import fitz  # PyMuPDF
 # Configuration
 # --------------------
 ALLOWED_ORIGINS = [
-    "https://savemedia-pdf.blogspot.com",
+    "https://pdf-savemedia.blogspot.com",
+    "https://www.pdf.savemedia.online",
     "https://pdf.savemedia.online",
 ]
 MAX_UPLOAD_SIZE = 200 * 1024 * 1024  # 200 MB max (adjust as needed)
