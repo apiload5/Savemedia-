@@ -22,10 +22,8 @@ class PDFGenerator:
     
     def convert_multiple(self, input_paths: list, session_id: str) -> str:
         """Combine multiple files into one PDF"""
-        from PIL import Image
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import letter
-        from reportlab.lib.utils import ImageReader
         
         output_path = os.path.join(self.output_dir, f"{session_id}_combined.pdf")
         
