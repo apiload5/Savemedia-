@@ -13,7 +13,7 @@ from PyPDF2 import PdfMerger
 # --------------------
 ALLOWED_ORIGINS = [
     "https://pdf-savemedia.blogspot.com",
-    "https://savemedia-pdf.blogspot.com",
+    "https://pdf.savemedia.online/?m=1",
     "https://pdf.savemedia.online",
     "https://www.pdf.savemedia.online",
 ]
