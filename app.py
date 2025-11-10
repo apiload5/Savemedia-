@@ -7,15 +7,17 @@ from pathlib import Path
 from PIL import Image
 import fitz  # PyMuPDF
 from PyPDF2 import PdfMerger
+import os # Naya import (agar use hua to)
 
 # --------------------
-# Configuration
+# Configuration - FIX: Cleaned ALLOWED_ORIGINS
 # --------------------
 ALLOWED_ORIGINS = [
-    "https://pdf-savemedia.blogspot.com",
-    "https://pdf.savemedia.online/?m=1",
     "https://pdf.savemedia.online",
     "https://www.pdf.savemedia.online",
+    "https://pdf-savemedia.blogspot.com",
+    "https://savemedia-production.up.railway.app", # Khud ka URL bhi add kiya
+    "*" # ⭐ Temporary: Agar masla hal na ho, toh isko use karen.
 ]
 
 # --------------------
@@ -23,9 +25,15 @@ ALLOWED_ORIGINS = [
 # --------------------
 app = FastAPI(title="SaveMedia PDF Tools", version="1.1")
 
+# FIX: Added a check to allow all if '*' is present
+if "*" in ALLOWED_ORIGINS:
+    origins_to_allow = ["*"]
+else:
+    origins_to_allow = ALLOWED_ORIGINS
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=origins_to_allow,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,20 +44,35 @@ app.add_middleware(
 # --------------------
 def save_upload_tmp(upload: UploadFile) -> Path:
     suffix = Path(upload.filename).suffix or ""
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    # FIX: Ensure a unique temporary directory for each request
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = Path(tmp_dir) / f"{Path(upload.filename).stem}{suffix}"
+    
     try:
-        with tmp as f:
+        with open(tmp_path, "wb") as f:
             shutil.copyfileobj(upload.file, f)
-        return Path(tmp.name)
+        return tmp_path
     finally:
         upload.file.close()
 
 def cleanup_path(p: Path):
     try:
         if p.exists():
-            p.unlink()
+            # Agar yeh file ek temporary directory ke andar hai, toh poori directory delete karen.
+            if p.parent.name.startswith("tmp"):
+                shutil.rmtree(p.parent)
+            else:
+                p.unlink()
     except Exception:
         pass
+
+# --------------------
+# Root Path Check - FIX: Added for 404 troubleshooting
+# --------------------
+@app.get("/")
+def read_root():
+    return {"status": "Server is Live", "version": app.version}
+
 
 # --------------------
 # Convert to PDF (multi-file supported)
@@ -63,9 +86,14 @@ async def convert_to_pdf(
         raise HTTPException(status_code=400, detail="No file uploaded")
 
     pdf_buffers = []
+    
+    # FIX: Temporary files ko sahi tarah se manage karne ke liye
+    paths_to_cleanup = []
 
     for upload in files:
         tmp_in = save_upload_tmp(upload)
+        paths_to_cleanup.append(tmp_in)
+        
         ext = tmp_in.suffix.lower()
         buf = io.BytesIO()
 
@@ -95,11 +123,17 @@ async def convert_to_pdf(
                 soffice = shutil.which("soffice") or shutil.which("libreoffice")
                 if not soffice:
                     raise HTTPException(status_code=500, detail="LibreOffice not found on server")
-                cmd = [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(tmp_in.parent), str(tmp_in)]
+                
+                # output directory ke liye naya temp dir use karen
+                outdir = tempfile.mkdtemp()
+                paths_to_cleanup.append(Path(outdir)) 
+                
+                cmd = [soffice, "--headless", "--convert-to", "pdf", "--outdir", outdir, str(tmp_in)]
                 subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-                converted = tmp_in.with_suffix('.pdf')
+                converted = Path(outdir) / tmp_in.with_suffix('.pdf').name
+                
                 if not converted.exists():
-                    raise HTTPException(status_code=500, detail="Conversion failed")
+                    raise HTTPException(status_code=500, detail=f"Conversion failed. Output dir: {os.listdir(outdir)}")
                 with converted.open("rb") as f:
                     buf.write(f.read())
 
@@ -114,14 +148,22 @@ async def convert_to_pdf(
             buf.seek(0)
             pdf_buffers.append(buf)
 
+        except Exception as e:
+            # Agar koi aur masla ho toh bhi cleanup karen
+            raise HTTPException(status_code=500, detail=f"Internal conversion error: {e}")
         finally:
-            cleanup_path(tmp_in)
-            cleanup_path(tmp_in.with_suffix('.pdf'))
+            # File cleanup sirf function ke end mein hoga
+            pass
+            
+    # Function ka end mein cleanup
+    for p in paths_to_cleanup:
+        cleanup_path(p)
 
     # Combine all PDFs (if requested)
     if as_single_pdf and len(pdf_buffers) > 1:
         merger = PdfMerger()
         for pdf in pdf_buffers:
+            # FIX: PyPDF2 ko BytesIO() ka naya copy bhejen
             merger.append(io.BytesIO(pdf.getvalue()))
         combined = io.BytesIO()
         merger.write(combined)
@@ -133,6 +175,9 @@ async def convert_to_pdf(
             headers={"Content-Disposition": "attachment; filename=merged.pdf"}
         )
     else:
+        # FIX: Agar sirf ek file hai to ussi ko return karen
+        if not pdf_buffers:
+             raise HTTPException(status_code=500, detail="No PDF generated.")
         pdf = pdf_buffers[0]
         return StreamingResponse(
             pdf,
@@ -149,6 +194,8 @@ async def convert_from_pdf(
     format: str = Form("image")  # 'image' | 'docx' | 'text'
 ):
     tmp_in = save_upload_tmp(file)
+    paths_to_cleanup = [tmp_in]
+    
     try:
         if tmp_in.suffix.lower() != ".pdf":
             raise HTTPException(status_code=400, detail="Uploaded file is not a PDF")
@@ -176,22 +223,30 @@ async def convert_from_pdf(
             soffice = shutil.which("soffice") or shutil.which("libreoffice")
             if not soffice:
                 raise HTTPException(status_code=500, detail="LibreOffice not found on server")
-            cmd = [soffice, "--headless", "--convert-to", "docx", "--outdir", str(tmp_in.parent), str(tmp_in)]
+            
+            # output directory ke liye naya temp dir use karen
+            outdir = tempfile.mkdtemp()
+            paths_to_cleanup.append(Path(outdir))
+
+            cmd = [soffice, "--headless", "--convert-to", "docx", "--outdir", outdir, str(tmp_in)]
             subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-            converted = tmp_in.with_suffix(".docx")
+            converted = Path(outdir) / tmp_in.with_suffix(".docx").name
+            
             if not converted.exists():
                 raise HTTPException(status_code=500, detail="Conversion failed")
+            
             return StreamingResponse(converted.open("rb"),
                                      media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                                      headers={"Content-Disposition": f"attachment; filename={converted.name}"})
     finally:
-        cleanup_path(tmp_in)
-        cleanup_path(tmp_in.with_suffix(".docx"))
-        cleanup_path(tmp_in.with_suffix(".pdf"))
+        # Final cleanup
+        for p in paths_to_cleanup:
+            cleanup_path(p)
 
 # --------------------
 # Health check
 # --------------------
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # FIX: Ab yeh check karega ke kya server chal raha hai
+    return {"status": "ok", "app_version": app.version}
