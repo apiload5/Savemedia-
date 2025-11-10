@@ -1,19 +1,11 @@
-# --- Core Framework ---
-fastapi==0.115.2
-uvicorn==0.30.6
-
-# --- File Handling & Image Conversion ---
-Pillow==10.4.0
-img2pdf==0.5.1
-
-# --- PDF & Document Processing ---
-PyMuPDF==1.24.10        # (fitz library)
-PyPDF2==3.0.1           # For merging PDFs
-reportlab==4.2.2        # For TXT → PDF conversion
-
-# --- Office Conversion Helpers ---
-python-docx==1.1.2      # Optional (DOCX reading support)
-odfpy==1.4.1            # For ODT file handling
-
-# --- Compression & Utils ---
-aiofiles==24.1.0
+fastapi
+uvicorn
+Pillow
+img2pdf
+PyMuPDF    # (fitz library)
+PyPDF2      # For merging PDFs
+reportlab  # For TXT → PDF conversion
+python-docx # Optional (DOCX reading support)
+odfpy       # For ODT file handling
+aiofiles
+python-multipart
