@@ -3,7 +3,7 @@ import uuid
 import asyncio
 import aiofiles
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import magic
 from converters.pdf_generator import PDFGenerator
@@ -24,7 +24,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -52,15 +52,19 @@ ALLOWED_FROM_PDF = {'application/pdf'}
 
 @app.get("/")
 async def root():
-    return {
+    return JSONResponse({
         "message": "SaveMedia PDF Converter API",
-        "status": "active",
+        "status": "active", 
         "version": "2.0.0",
         "endpoints": {
-            "convert_to_pdf": "/convert/to-pdf",
-            "convert_from_pdf": "/convert/from-pdf"
+            "convert_to_pdf": "POST /convert/to-pdf",
+            "convert_from_pdf": "POST /convert/from-pdf"
         }
-    }
+    })
+
+@app.get("/health")
+async def health_check():
+    return JSONResponse({"status": "healthy", "service": "pdf-converter"})
 
 @app.post("/convert/to-pdf")
 async def convert_to_pdf(
@@ -69,10 +73,10 @@ async def convert_to_pdf(
 ):
     """
     Convert files to PDF format
-    - Single file: Convert one file to PDF
-    - Multiple files: Combine multiple files into one PDF
     """
     try:
+        print(f"Received request: {len(files)} files, type: {conversion_type}")
+        
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
 
@@ -131,6 +135,7 @@ async def convert_to_pdf(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Conversion error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
 @app.post("/convert/from-pdf")
@@ -139,12 +144,11 @@ async def convert_from_pdf(
     format_type: str = Form("image")
 ):
     """
-    Convert PDF to other formats:
-    - image: Extract images as ZIP
-    - text: Extract text as TXT
-    - docx: Convert to DOCX (basic conversion)
+    Convert PDF to other formats
     """
     try:
+        print(f"Received PDF conversion request: {file.filename}, format: {format_type}")
+        
         # Validate file
         await validate_file(file, ALLOWED_FROM_PDF)
         
@@ -196,6 +200,7 @@ async def convert_from_pdf(
     except HTTPException:
         raise
     except Exception as e:
+        print(f"PDF conversion error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
 async def validate_file(file: UploadFile, allowed_types: set):
@@ -239,4 +244,5 @@ async def cleanup_file(file_path: str):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
