@@ -1,11 +1,9 @@
 fastapi
 uvicorn
-Pillow
-img2pdf
-PyMuPDF    # (fitz library)
-PyPDF2      # For merging PDFs
-reportlab  # For TXT → PDF conversion
-python-docx # Optional (DOCX reading support)
-odfpy       # For ODT file handling
-aiofiles
 python-multipart
+python-magic
+Pillow
+aiofiles
+pypdf2
+python-docx
+reportlab
