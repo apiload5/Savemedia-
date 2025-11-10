@@ -1,30 +1,21 @@
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 import os
 import uuid
-import asyncio
 import aiofiles
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import magic
+import asyncio
 from converters.pdf_generator import PDFGenerator
 from converters.pdf_extractor import PDFExtractor
 
-app = FastAPI(
-    title="SaveMedia PDF Converter API",
-    description="Fast and lightweight PDF conversion service",
-    version="2.0.0"
-)
+app = FastAPI(title="SaveMedia PDF Converter")
 
-# CORS configuration - ONLY YOUR DOMAIN
-ALLOWED_ORIGINS = [
-    "https://pdf.savemedia.online",
-]
-
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["https://pdf.savemedia.online"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -37,52 +28,37 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Allowed file types
-ALLOWED_TO_PDF = {
-    'image/jpeg', 'image/jpg', 'image/png', 'image/webp', 
-    'image/tiff', 'image/bmp', 'text/plain',
-    'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'application/vnd.oasis.opendocument.text',
-    'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    'application/pdf'
-}
+# Allowed file extensions (without magic)
+ALLOWED_TO_PDF_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp', '.txt', 
+                      '.doc', '.docx', '.odt', '.ppt', '.pptx', '.xls', '.xlsx', '.pdf'}
 
-ALLOWED_FROM_PDF = {'application/pdf'}
+ALLOWED_FROM_PDF_EXT = {'.pdf'}
 
 @app.get("/")
 async def root():
     return JSONResponse({
-        "message": "SaveMedia PDF Converter API",
-        "status": "active", 
-        "version": "2.0.0",
-        "endpoints": {
-            "convert_to_pdf": "POST /convert/to-pdf",
-            "convert_from_pdf": "POST /convert/from-pdf"
-        }
+        "message": "SaveMedia PDF Converter API is running!",
+        "status": "active",
+        "version": "2.0.0"
     })
 
 @app.get("/health")
-async def health_check():
-    return JSONResponse({"status": "healthy", "service": "pdf-converter"})
+async def health():
+    return {"status": "healthy", "service": "pdf-converter"}
 
 @app.post("/convert/to-pdf")
 async def convert_to_pdf(
     files: list[UploadFile] = File(...),
     conversion_type: str = Form("single")
 ):
-    """
-    Convert files to PDF format
-    """
+    """Convert files to PDF format"""
     try:
-        print(f"Received request: {len(files)} files, type: {conversion_type}")
-        
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
 
         # Validate file size and type
         for file in files:
-            await validate_file(file, ALLOWED_TO_PDF)
+            await validate_file(file, ALLOWED_TO_PDF_EXT)
 
         session_id = str(uuid.uuid4())
         pdf_generator = PDFGenerator()
@@ -135,7 +111,6 @@ async def convert_to_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Conversion error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
 @app.post("/convert/from-pdf")
@@ -143,14 +118,10 @@ async def convert_from_pdf(
     file: UploadFile = File(...),
     format_type: str = Form("image")
 ):
-    """
-    Convert PDF to other formats
-    """
+    """Convert PDF to other formats"""
     try:
-        print(f"Received PDF conversion request: {file.filename}, format: {format_type}")
-        
         # Validate file
-        await validate_file(file, ALLOWED_FROM_PDF)
+        await validate_file(file, ALLOWED_FROM_PDF_EXT)
         
         # Validate format type
         valid_formats = ['image', 'text', 'docx']
@@ -200,11 +171,10 @@ async def convert_from_pdf(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"PDF conversion error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
-async def validate_file(file: UploadFile, allowed_types: set):
-    """Validate file type and size"""
+async def validate_file(file: UploadFile, allowed_extensions: set):
+    """Validate file extension and size"""
     # Check file size
     file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
@@ -213,15 +183,10 @@ async def validate_file(file: UploadFile, allowed_types: set):
     if file_size > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large")
     
-    # Check file type using python-magic
-    file_content = await file.read(1024)  # Read first 1KB for magic number detection
-    file.file.seek(0)  # Reset to beginning
-    
-    mime = magic.Magic(mime=True)
-    file_type = mime.from_buffer(file_content)
-    
-    if file_type not in allowed_types:
-        raise HTTPException(status_code=400, detail=f"File type not allowed: {file_type}")
+    # Check file extension
+    file_ext = os.path.splitext(file.filename.lower())[1]
+    if file_ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail=f"File type not allowed: {file_ext}")
 
 async def save_uploaded_file(file: UploadFile, session_id: str) -> str:
     """Save uploaded file to temporary directory"""
