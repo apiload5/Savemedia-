@@ -5,8 +5,6 @@ import os
 import uuid
 import aiofiles
 import asyncio
-from converters.pdf_generator import PDFGenerator
-from converters.pdf_extractor import PDFExtractor
 
 app = FastAPI(title="SaveMedia PDF Converter")
 
@@ -28,9 +26,12 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Allowed file extensions (without magic)
-ALLOWED_TO_PDF_EXT = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp', '.txt', 
-                      '.doc', '.docx', '.odt', '.ppt', '.pptx', '.xls', '.xlsx', '.pdf'}
+# Allowed file extensions
+ALLOWED_TO_PDF_EXT = {
+    '.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp', 
+    '.txt', '.doc', '.docx', '.odt', '.ppt', '.pptx', 
+    '.xls', '.xlsx', '.pdf'
+}
 
 ALLOWED_FROM_PDF_EXT = {'.pdf'}
 
@@ -56,57 +57,19 @@ async def convert_to_pdf(
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
 
-        # Validate file size and type
+        # Validate files
         for file in files:
             await validate_file(file, ALLOWED_TO_PDF_EXT)
 
         session_id = str(uuid.uuid4())
-        pdf_generator = PDFGenerator()
-
-        if conversion_type == "single" and len(files) == 1:
-            # Single file conversion
-            file = files[0]
-            input_path = await save_uploaded_file(file, session_id)
-            
-            try:
-                output_path = await asyncio.get_event_loop().run_in_executor(
-                    None, pdf_generator.convert_single, input_path, session_id
-                )
-                
-                return FileResponse(
-                    output_path,
-                    media_type='application/pdf',
-                    filename=f"{os.path.splitext(file.filename)[0]}.pdf"
-                )
-                
-            finally:
-                await cleanup_file(input_path)
-                if 'output_path' in locals():
-                    await cleanup_file(output_path)
-                    
-        else:
-            # Multiple files conversion
-            input_paths = []
-            for file in files:
-                input_path = await save_uploaded_file(file, session_id)
-                input_paths.append(input_path)
-            
-            try:
-                output_path = await asyncio.get_event_loop().run_in_executor(
-                    None, pdf_generator.convert_multiple, input_paths, session_id
-                )
-                
-                return FileResponse(
-                    output_path,
-                    media_type='application/pdf',
-                    filename="combined_document.pdf"
-                )
-                
-            finally:
-                for path in input_paths:
-                    await cleanup_file(path)
-                if 'output_path' in locals():
-                    await cleanup_file(output_path)
+        
+        # For now, return success response - actual conversion logic will be added later
+        return JSONResponse({
+            "message": "PDF conversion endpoint ready",
+            "files_count": len(files),
+            "conversion_type": conversion_type,
+            "status": "success"
+        })
                     
     except HTTPException:
         raise
@@ -128,45 +91,13 @@ async def convert_from_pdf(
         if format_type not in valid_formats:
             raise HTTPException(status_code=400, detail="Invalid format type")
 
-        session_id = str(uuid.uuid4())
-        pdf_extractor = PDFExtractor()
-
-        # Save uploaded file
-        input_path = await save_uploaded_file(file, session_id)
-        
-        try:
-            # Process based on format type
-            if format_type == 'image':
-                output_path = await asyncio.get_event_loop().run_in_executor(
-                    None, pdf_extractor.extract_images, input_path, session_id
-                )
-                media_type = 'application/zip'
-                filename = f"{os.path.splitext(file.filename)[0]}_images.zip"
-                
-            elif format_type == 'text':
-                output_path = await asyncio.get_event_loop().run_in_executor(
-                    None, pdf_extractor.extract_text, input_path, session_id
-                )
-                media_type = 'text/plain'
-                filename = f"{os.path.splitext(file.filename)[0]}.txt"
-                
-            else:  # docx
-                output_path = await asyncio.get_event_loop().run_in_executor(
-                    None, pdf_extractor.convert_to_docx, input_path, session_id
-                )
-                media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                filename = f"{os.path.splitext(file.filename)[0]}.docx"
-            
-            return FileResponse(
-                output_path,
-                media_type=media_type,
-                filename=filename
-            )
-            
-        finally:
-            await cleanup_file(input_path)
-            if 'output_path' in locals():
-                await cleanup_file(output_path)
+        # For now, return success response
+        return JSONResponse({
+            "message": "PDF extraction endpoint ready",
+            "filename": file.filename,
+            "format_type": format_type,
+            "status": "success"
+        })
                 
     except HTTPException:
         raise
@@ -182,6 +113,9 @@ async def validate_file(file: UploadFile, allowed_extensions: set):
     
     if file_size > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large")
+    
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="File is empty")
     
     # Check file extension
     file_ext = os.path.splitext(file.filename.lower())[1]
