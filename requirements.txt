@@ -5,3 +5,4 @@ aiofiles
 pypdf2
 reportlab
 Pillow
+python-docx
