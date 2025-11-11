@@ -1,5 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uuid
@@ -7,15 +7,16 @@ import aiofiles
 import asyncio
 from typing import List
 
-app = FastAPI(title="SaveMedia PDF Converter", version="1.0.0")
+app = FastAPI()
 
-# CORS configuration
+# CORS configuration - IMPORTANT: Add response headers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://pdf.savemedia.online"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"]  # This is IMPORTANT for file downloads
 )
 
 # Configuration
@@ -27,60 +28,47 @@ MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Allowed file extensions
-ALLOWED_TO_PDF = {'.png', '.jpg', '.jpeg', '.webp', '.tiff', '.bmp', '.txt', '.pdf'}
-ALLOWED_FROM_PDF = {'.pdf'}
-
 @app.get("/")
 async def root():
-    return {
-        "message": "SaveMedia PDF Converter API", 
-        "status": "active",
-        "version": "1.0.0"
-    }
+    return {"message": "SaveMedia PDF Converter API", "status": "active"}
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy", "service": "pdf-converter"}
+    return {"status": "healthy"}
 
 @app.post("/convert/to-pdf")
 async def convert_to_pdf(
-    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     conversion_type: str = Form("single")
 ):
-    """
-    Convert files to PDF format
-    """
     try:
-        print(f"🔄 Conversion request: {len(files)} files, type: {conversion_type}")
+        print(f"🔄 Conversion request: {len(files)} files")
         
         if not files or len(files) == 0:
-            raise HTTPException(status_code=400, detail="No files provided")
-
-        # Validate files
-        for file in files:
-            file_ext = os.path.splitext(file.filename.lower())[1]
-            if file_ext not in ALLOWED_TO_PDF:
-                raise HTTPException(status_code=400, detail=f"File type not allowed: {file_ext}")
+            return JSONResponse(
+                {"error": "No files provided", "status": "failed"},
+                status_code=400
+            )
 
         session_id = str(uuid.uuid4())
         
         if conversion_type == "single" and len(files) == 1:
-            # Single file conversion
-            return await convert_single_file(background_tasks, files[0], session_id)
+            return await handle_single_conversion(files[0], session_id)
         else:
-            # Multiple files conversion
-            return await convert_multiple_files(background_tasks, files, session_id)
+            return await handle_multiple_conversion(files, session_id)
             
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"❌ Conversion error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+        return JSONResponse(
+            {"error": str(e), "status": "failed"},
+            status_code=500
+        )
 
-async def convert_single_file(background_tasks: BackgroundTasks, file: UploadFile, session_id: str):
-    """Convert single file to PDF"""
+async def handle_single_conversion(file: UploadFile, session_id: str):
+    """Handle single file conversion"""
+    input_path = None
+    output_path = None
+    
     try:
         # Save uploaded file
         input_path = await save_uploaded_file(file, session_id)
@@ -96,25 +84,29 @@ async def convert_single_file(background_tasks: BackgroundTasks, file: UploadFil
         
         print(f"✅ PDF created: {output_path}")
         
-        # Schedule cleanup
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        # Return PDF file
-        return FileResponse(
-            output_path,
+        # Return the PDF file for download
+        response = FileResponse(
+            path=output_path,
             media_type='application/pdf',
-            filename=f"{os.path.splitext(file.filename)[0]}.pdf"
+            filename=f"converted_{os.path.splitext(file.filename)[0]}.pdf",
+            background=None  # Important: Don't use background tasks for cleanup
         )
         
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Single conversion failed: {str(e)}")
-
-async def convert_multiple_files(background_tasks: BackgroundTasks, files: List[UploadFile], session_id: str):
-    """Convert multiple files to single PDF"""
-    try:
-        input_paths = []
+        return response
         
+    except Exception as e:
+        raise e
+    finally:
+        # Cleanup files after response is sent
+        if input_path and os.path.exists(input_path):
+            await cleanup_file(input_path)
+        # Don't cleanup output_path immediately - let it be downloaded first
+
+async def handle_multiple_conversion(files: List[UploadFile], session_id: str):
+    """Handle multiple files conversion"""
+    input_paths = []
+    
+    try:
         # Save all uploaded files
         for file in files:
             input_path = await save_uploaded_file(file, session_id)
@@ -131,105 +123,109 @@ async def convert_multiple_files(background_tasks: BackgroundTasks, files: List[
         
         print(f"✅ Combined PDF created: {output_path}")
         
-        # Schedule cleanup
-        for path in input_paths:
-            background_tasks.add_task(cleanup_file, path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        # Return combined PDF
-        return FileResponse(
-            output_path,
+        # Return the combined PDF file
+        response = FileResponse(
+            path=output_path,
             media_type='application/pdf',
-            filename="combined_document.pdf"
+            filename="combined_document.pdf",
+            background=None
         )
         
+        return response
+        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Multiple conversion failed: {str(e)}")
+        raise e
+    finally:
+        # Cleanup input files
+        for path in input_paths:
+            if os.path.exists(path):
+                await cleanup_file(path)
 
 @app.post("/convert/from-pdf")
 async def convert_from_pdf(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     format_type: str = Form("text")
 ):
-    """
-    Convert PDF to other formats
-    """
     try:
-        print(f"🔄 PDF extraction: {file.filename}, format: {format_type}")
+        print(f"🔄 PDF extraction: {file.filename}")
         
-        # Validate file
-        file_ext = os.path.splitext(file.filename.lower())[1]
-        if file_ext not in ALLOWED_FROM_PDF:
-            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-        
-        # Validate format type
-        valid_formats = ['image', 'text', 'docx']
-        if format_type not in valid_formats:
-            raise HTTPException(status_code=400, detail="Invalid format type")
+        if not file.filename.lower().endswith('.pdf'):
+            return JSONResponse(
+                {"error": "Only PDF files are allowed", "status": "failed"},
+                status_code=400
+            )
 
         session_id = str(uuid.uuid4())
+        input_path = None
+        output_path = None
         
-        # Save uploaded file
-        input_path = await save_uploaded_file(file, session_id)
-        print(f"💾 PDF saved: {input_path}")
-        
-        # Process based on format type
-        from converters.pdf_extractor import PDFExtractor
-        pdf_extractor = PDFExtractor()
+        try:
+            # Save uploaded file
+            input_path = await save_uploaded_file(file, session_id)
+            print(f"💾 PDF saved: {input_path}")
+            
+            # Process based on format type
+            from converters.pdf_extractor import PDFExtractor
+            pdf_extractor = PDFExtractor()
 
-        if format_type == 'image':
-            output_path = await asyncio.get_event_loop().run_in_executor(
-                None, pdf_extractor.extract_images, input_path, session_id
-            )
-            media_type = 'application/zip'
-            filename = f"{os.path.splitext(file.filename)[0]}_images.zip"
+            if format_type == 'image':
+                output_path = await asyncio.get_event_loop().run_in_executor(
+                    None, pdf_extractor.extract_images, input_path, session_id
+                )
+                media_type = 'application/zip'
+                filename = f"images_{os.path.splitext(file.filename)[0]}.zip"
+                
+            elif format_type == 'text':
+                output_path = await asyncio.get_event_loop().run_in_executor(
+                    None, pdf_extractor.extract_text, input_path, session_id
+                )
+                media_type = 'text/plain'
+                filename = f"text_{os.path.splitext(file.filename)[0]}.txt"
+                
+            else:  # docx
+                output_path = await asyncio.get_event_loop().run_in_executor(
+                    None, pdf_extractor.convert_to_docx, input_path, session_id
+                )
+                media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                filename = f"document_{os.path.splitext(file.filename)[0]}.docx"
             
-        elif format_type == 'text':
-            output_path = await asyncio.get_event_loop().run_in_executor(
-                None, pdf_extractor.extract_text, input_path, session_id
-            )
-            media_type = 'text/plain'
-            filename = f"{os.path.splitext(file.filename)[0]}.txt"
+            print(f"✅ Extraction successful: {output_path}")
             
-        else:  # docx
-            output_path = await asyncio.get_event_loop().run_in_executor(
-                None, pdf_extractor.convert_to_docx, input_path, session_id
+            # Return the file for download
+            response = FileResponse(
+                path=output_path,
+                media_type=media_type,
+                filename=filename,
+                background=None
             )
-            media_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-            filename = f"{os.path.splitext(file.filename)[0]}.docx"
-        
-        print(f"✅ Extraction successful: {output_path}")
-        
-        # Schedule cleanup
-        background_tasks.add_task(cleanup_file, input_path)
-        background_tasks.add_task(cleanup_file, output_path)
-        
-        return FileResponse(
-            output_path,
-            media_type=media_type,
-            filename=filename
-        )
-        
-    except HTTPException:
-        raise
+            
+            return response
+            
+        except Exception as e:
+            raise e
+        finally:
+            # Cleanup input file
+            if input_path and os.path.exists(input_path):
+                await cleanup_file(input_path)
+                
     except Exception as e:
-        print(f"❌ Extraction error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+        print(f"❌ Error: {str(e)}")
+        return JSONResponse(
+            {"error": str(e), "status": "failed"},
+            status_code=500
+        )
 
 async def save_uploaded_file(file: UploadFile, session_id: str) -> str:
     """Save uploaded file to temporary directory"""
     filename = f"{session_id}_{file.filename}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     
-    # Read file content
+    # Read and save file
     content = await file.read()
     
-    # Check file size
     if len(content) > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large")
     
-    # Save file
     async with aiofiles.open(file_path, 'wb') as f:
         await f.write(content)
     
@@ -243,6 +239,32 @@ async def cleanup_file(file_path: str):
             print(f"🧹 Cleaned up: {file_path}")
     except Exception as e:
         print(f"⚠️ Cleanup error: {e}")
+
+# Background task to cleanup old files (optional)
+import threading
+import time
+
+def cleanup_old_files():
+    """Clean up files older than 1 hour"""
+    while True:
+        try:
+            now = time.time()
+            for dir_path in [UPLOAD_DIR, OUTPUT_DIR]:
+                if os.path.exists(dir_path):
+                    for filename in os.listdir(dir_path):
+                        file_path = os.path.join(dir_path, filename)
+                        if os.path.isfile(file_path):
+                            # Delete files older than 1 hour
+                            if now - os.path.getctime(file_path) > 3600:
+                                os.remove(file_path)
+                                print(f"🧹 Cleaned old file: {file_path}")
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+        time.sleep(3600)  # Run every hour
+
+# Start cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_old_files, daemon=True)
+cleanup_thread.start()
 
 if __name__ == "__main__":
     import uvicorn
