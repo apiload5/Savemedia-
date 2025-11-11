@@ -1,8 +1,7 @@
 fastapi
 uvicorn
 python-multipart
-Pillow
 aiofiles
 pypdf2
-python-docx
 reportlab
+Pillow
