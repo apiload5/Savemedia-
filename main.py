@@ -188,19 +188,26 @@ async def convert_from_pdf(
         print(f"General extraction error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
+# MISSING FUNCTIONS - YEH ADD KARNA HAI
+
 async def validate_file(file: UploadFile, allowed_extensions: set):
-    file.file.seek(0, 2)
+    """Validate file extension and size"""
+    file.file.seek(0, 2)  # Seek to end
     file_size = file.file.tell()
-    file.file.seek(0)
+    file.file.seek(0)  # Reset to beginning
     
     if file_size > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large")
+    
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="File is empty")
     
     file_ext = os.path.splitext(file.filename.lower())[1]
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail=f"File type not allowed: {file_ext}")
 
 async def save_uploaded_file(file: UploadFile, session_id: str) -> str:
+    """Save uploaded file to temporary directory"""
     filename = f"{session_id}_{file.filename}"
     file_path = os.path.join(UPLOAD_DIR, filename)
     
@@ -211,8 +218,16 @@ async def save_uploaded_file(file: UploadFile, session_id: str) -> str:
     return file_path
 
 async def cleanup_file(file_path: str):
+    """Clean up temporary file"""
     try:
         if os.path.exists(file_path):
             os.remove(file_path)
     except Exception as e:
         print(f"Cleanup error: {e}")
+
+# END OF MISSING FUNCTIONS
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
