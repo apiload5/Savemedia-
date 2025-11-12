@@ -5,7 +5,7 @@ from typing import List
 from fpdf import FPDF
 from PyPDF2 import PdfReader, PdfWriter
 from PIL import Image
-import io
+import io, os
 
 # -----------------------------------
 # Configuration
@@ -142,6 +142,7 @@ async def convert_to_pdf(files: List[UploadFile] = File(...)):
         else:
             raise HTTPException(status_code=415, detail=f"Unsupported file type: {filename}")
 
+    # ✅ Final merged PDF response
     merged_pdf = merge_pdfs(pdf_parts)
     headers = {"Content-Disposition": 'attachment; filename="converted.pdf"'}
     return StreamingResponse(merged_pdf, media_type="application/pdf", headers=headers)
@@ -174,3 +175,13 @@ async def convert_from_pdf(file: UploadFile = File(...), format_type: str = Form
 
     else:
         raise HTTPException(status_code=400, detail="Invalid format_type")
+
+
+# -----------------------------------
+# Local run (optional)
+# -----------------------------------
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    print(f"🚀 Starting SaveMedia PDF server on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
