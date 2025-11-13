@@ -1,90 +1,111 @@
-import os
-import io
-import uuid
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.background import BackgroundTask # Cleanup ke liye zaruri
+from io import BytesIO
+from typing import List
 from PIL import Image
+from fpdf import FPDF
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from starlette.responses import StreamingResponse
+from starlette.middleware.cors import CORSMiddleware # <--- NAYA IMPORT
 
-# -----------------
-# 1. Configuration
-# -----------------
-ALLOWED_ORIGIN = "https://pdf.savemedia.online"
-# Railway par /tmp directory mein likhne ki ijazat hoti hai.
-TEMP_DIR = "/tmp/converted" 
-os.makedirs(TEMP_DIR, exist_ok=True)
+# FastAPI application instance
+app = FastAPI()
 
-# -----------------
-# 2. FastAPI Setup
-# -----------------
-app = FastAPI(
-    title="SaveMedia PDF Converter API",
-    description="Lightweight and low-cost image-to-PDF conversion service.",
-    version="1.0.0"
-)
+# ----------------------------------------------------
+# 🌟 FIX: CORS MIDDLEWARE (Domain Allow Karne Ke Liye) 
+# ----------------------------------------------------
+# Wo domains jinko is API ko call karne ki ijazat hogi.
+# Sab domains ko allow karne ke liye "*" ka istemal karen,
+# ya sirf apne domain (maslan "https://www.mysavemedia.com") ko likhen.
+origins = [
+    "https://pdf.savemedia.online", 
+    # "https://www.yourfrontenddomain.com", # <--- Ise apne asal domain se badal dain.
+    # "http://localhost:3000",
+]
 
-# CORS Middleware Setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
+    allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Sab HTTP methods (POST, GET, etc.) ki ijazat
+    allow_headers=["*"],  # Sab HTTP headers ki ijazat
 )
+# ----------------------------------------------------
 
-# -----------------
-# 3. Conversion Endpoint
-# -----------------
-
-@app.post("/convert/to-pdf", response_class=FileResponse)
-async def convert_image_to_pdf(file: UploadFile = File(...)):
+def image_to_pdf(image_data: BytesIO) -> bytes:
     """
-    JPG/PNG images ko PDF mein convert karta hai.
+    In-memory image ko PDF bytes mein convert karta hai.
+    (Pehle ki AttributeError fix shamil hai)
     """
-    allowed_types = ["image/jpeg", "image/png"]
-    if file.content_type not in allowed_types:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Unsupported file type: {file.content_type}. Only {', '.join(t.split('/')[1] for t in allowed_types)} allowed."
-        )
-
-    temp_file_path = None
     try:
-        # 1. Image Data ko Memory mein read karein
-        image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data))
+        # Image ko PIL (Pillow) se open karen
+        img = Image.open(image_data)
         
-        # 2. Output PDF file ka path define karein
-        unique_id = uuid.uuid4().hex
-        temp_file_path = os.path.join(TEMP_DIR, f"{unique_id}.pdf")
+        # Dimensions aur format hasil karen
+        w, h = img.size
+        image_format = img.format
         
-        # 3. Conversion Logic (using PIL/Pillow)
-        if image.mode in ('RGBA', 'P'): 
-            image = image.convert('RGB')
-            
-        image.save(temp_file_path, "PDF", resolution=100.0)
+        if not image_format:
+            raise ValueError("Image format could not be determined. Check if the file is a valid image.")
 
-        # 4. FileResponse ke through bhej dein aur background mein delete karein
-        output_filename = os.path.splitext(file.filename)[0] + ".pdf"
+        # FPDF object banaen
+        pdf = FPDF(unit="pt", format=(w, h))
+        pdf.add_page()
         
-        return FileResponse(
-            path=temp_file_path,
-            filename=output_filename,
-            media_type="application/pdf",
-            # File transfer hone ke baad hi file ko delete karne ke liye BackgroundTask use karein
-            background=BackgroundTask(os.remove, temp_file_path)
+        # BytesIO pointer ko shuruaat mein laayen
+        image_data.seek(0)
+        
+        # FIX: fpdf.image ko 'type' argument ke saath call karen
+        pdf.image(
+            name=image_data, 
+            x=0, 
+            y=0, 
+            w=w, 
+            h=h, 
+            type=image_format # Ye wo FIX hai jo 'rfind' error ko dur karta hai
         )
-        
+
+        # PDF ko in-memory bytes mein output karen
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+        return pdf_bytes
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Image processing error: {e}")
     except Exception as e:
-        print(f"Conversion Error: {e}")
-        # Agar error aaye toh file ko delete karne ki koshish karein
-        if temp_file_path and os.path.exists(temp_file_path):
-             try: os.remove(temp_file_path)
-             except: pass
-        raise HTTPException(status_code=500, detail="Conversion failed due to a server error.")
+        print(f"Error during PDF conversion: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during PDF generation.")
+
+
+@app.post("/convert/to-pdf", summary="Convert images to a single PDF")
+async def convert_to_pdf(files: List[UploadFile] = File(...)):
+    """
+    Multiple uploaded images (JPEG, PNG) ko ek single PDF file mein convert karta hai.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
         
-# Health Check
-@app.get("/")
-def read_root():
-    return {"status": "ok", "message": "PDF Converter Service is running"}
+    pdf_parts = []
+    
+    for file in files:
+        content = await file.read()
+        data = BytesIO(content)
+        
+        try:
+            pdf_part = image_to_pdf(data)
+            pdf_parts.append(pdf_part)
+        except HTTPException as e:
+            raise e
+        except Exception:
+            raise HTTPException(status_code=500, detail=f"Failed to process file: {file.filename}")
+
+    # Agar multiple parts hain, to sabse pehle ka PDF return karen (Merging logic ki zarurat ho sakti hai)
+    if pdf_parts:
+        final_pdf_bytes = pdf_parts[0]
+    else:
+         raise HTTPException(status_code=500, detail="No PDF parts were created.")
+
+
+    # Result ko StreamingResponse ke taur par return karen
+    return StreamingResponse(
+        BytesIO(final_pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=converted.pdf"}
+    )
