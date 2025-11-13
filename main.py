@@ -1,25 +1,25 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 from fpdf import FPDF
-from PyPDF2 import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter
 from PIL import Image
 import io, os
 
 # -----------------------------------
 # Config
 # -----------------------------------
-ALLOWED_ORIGINS = ["https://pdf.savemedia.online"]
+ALLOWED_ORIGINS = ["https://pdf.savemedia.online"]  # 🔒 Your domain
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 app = FastAPI(
-    title="SaveMedia PDF API",
+    title="SaveMedia PDF Lite API",
     version="1.0",
-    description="Simple PDF converter for SaveMedia.online — lightweight & cache-free"
+    description="Lightweight FastAPI PDF converter for SaveMedia.online"
 )
 
-# CORS setup
+# ✅ CORS setup (Only allows your domain)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -34,7 +34,10 @@ app.add_middleware(
 def read_file(upload: UploadFile) -> io.BytesIO:
     data = io.BytesIO()
     total = 0
-    for chunk in upload.file:
+    while True:
+        chunk = upload.file.read(8192)
+        if not chunk:
+            break
         total += len(chunk)
         if total > MAX_FILE_SIZE:
             raise HTTPException(status_code=413, detail="File too large (max 25MB)")
@@ -59,7 +62,7 @@ def image_to_pdf(img_bytes: io.BytesIO) -> io.BytesIO:
 def text_to_pdf(text: str) -> io.BytesIO:
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
+    pdf.set_font("Helvetica", size=12)
     for line in text.splitlines():
         pdf.multi_cell(0, 10, line)
     out = io.BytesIO()
@@ -80,10 +83,12 @@ def merge_pdfs(pdfs: List[io.BytesIO]) -> io.BytesIO:
     return out
 
 def extract_text(pdf_io: io.BytesIO) -> str:
+    pdf_io.seek(0)
     reader = PdfReader(pdf_io)
     text = []
     for page in reader.pages:
-        text.append(page.extract_text() or "")
+        page_text = page.extract_text() or ""
+        text.append(page_text)
     return "\n".join(text)
 
 # -----------------------------------
@@ -100,11 +105,11 @@ async def convert_to_pdf(files: List[UploadFile] = File(...)):
 
     pdf_parts = []
     for file in files:
-        name = file.filename or "file"
-        ext = name.lower().split(".")[-1]
+        name = file.filename.lower()
+        ext = name.split(".")[-1]
         data = read_file(file)
 
-        if ext in ["png", "jpg", "jpeg", "bmp", "webp", "tiff"]:
+        if ext in ["png", "jpg", "jpeg", "bmp", "webp"]:
             pdf_parts.append(image_to_pdf(data))
         elif ext == "txt":
             text = data.read().decode(errors="ignore")
@@ -112,7 +117,7 @@ async def convert_to_pdf(files: List[UploadFile] = File(...)):
         elif ext == "pdf":
             pdf_parts.append(data)
         else:
-            raise HTTPException(status_code=415, detail=f"Unsupported type: {name}")
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {ext}")
 
     merged = merge_pdfs(pdf_parts)
     headers = {"Content-Disposition": 'attachment; filename="converted.pdf"'}
@@ -120,23 +125,25 @@ async def convert_to_pdf(files: List[UploadFile] = File(...)):
 
 @app.post("/convert/from-pdf")
 async def convert_from_pdf(file: UploadFile = File(...), format_type: str = Form("text")):
-    if not file:
-        raise HTTPException(status_code=400, detail="No file uploaded")
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=415, detail="Upload must be .pdf file")
+        raise HTTPException(status_code=415, detail="File must be a PDF")
 
     data = read_file(file)
     if format_type == "pdf":
         headers = {"Content-Disposition": f'attachment; filename="{file.filename}"'}
         return StreamingResponse(data, media_type="application/pdf", headers=headers)
 
+    # Extract text from PDF
     text = extract_text(data)
-    output = io.BytesIO(text.encode("utf-8"))
+    out = io.BytesIO(text.encode("utf-8"))
     headers = {"Content-Disposition": 'attachment; filename="extracted.txt"'}
-    return StreamingResponse(output, media_type="text/plain", headers=headers)
+    return StreamingResponse(out, media_type="text/plain", headers=headers)
 
+# -----------------------------------
+# Run Server
+# -----------------------------------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    print(f"🚀 Running SaveMedia PDF API on port {port}")
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    print(f"🚀 Running SaveMedia Lite API on port {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
