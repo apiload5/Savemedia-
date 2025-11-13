@@ -8,9 +8,9 @@ from PIL import Image
 import io, os
 
 # -----------------------------------
-# Config
+# CONFIGURATION
 # -----------------------------------
-ALLOWED_ORIGINS = ["https://pdf.savemedia.online"]  # 🔒 Your domain
+ALLOWED_ORIGINS = ["https://pdf.savemedia.online"]  # ✅ Your domain
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 app = FastAPI(
@@ -19,7 +19,7 @@ app = FastAPI(
     description="Lightweight FastAPI PDF converter for SaveMedia.online"
 )
 
-# ✅ CORS setup (Only allows your domain)
+# ✅ Enable CORS for your domain
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -29,9 +29,10 @@ app.add_middleware(
 )
 
 # -----------------------------------
-# Helper Functions
+# HELPER FUNCTIONS
 # -----------------------------------
 def read_file(upload: UploadFile) -> io.BytesIO:
+    """Read uploaded file safely into memory with size limit."""
     data = io.BytesIO()
     total = 0
     while True:
@@ -45,7 +46,9 @@ def read_file(upload: UploadFile) -> io.BytesIO:
     data.seek(0)
     return data
 
+
 def image_to_pdf(img_bytes: io.BytesIO) -> io.BytesIO:
+    """Convert an image to a single-page PDF."""
     img = Image.open(img_bytes).convert("RGB")
     w, h = img.size
     pdf = FPDF(unit="pt", format=(w, h))
@@ -54,23 +57,29 @@ def image_to_pdf(img_bytes: io.BytesIO) -> io.BytesIO:
     img.save(temp, format="JPEG")
     temp.seek(0)
     pdf.image(temp, 0, 0, w, h)
+
     out = io.BytesIO()
-    pdf.output(out)
+    out.write(pdf.output(dest="S").encode("latin1"))  # ✅ FIXED
     out.seek(0)
     return out
 
+
 def text_to_pdf(text: str) -> io.BytesIO:
+    """Convert plain text to PDF."""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", size=12)
     for line in text.splitlines():
         pdf.multi_cell(0, 10, line)
+
     out = io.BytesIO()
-    pdf.output(out)
+    out.write(pdf.output(dest="S").encode("latin1"))  # ✅ FIXED
     out.seek(0)
     return out
 
+
 def merge_pdfs(pdfs: List[io.BytesIO]) -> io.BytesIO:
+    """Merge multiple PDF files into one."""
     writer = PdfWriter()
     for p in pdfs:
         p.seek(0)
@@ -82,7 +91,9 @@ def merge_pdfs(pdfs: List[io.BytesIO]) -> io.BytesIO:
     out.seek(0)
     return out
 
+
 def extract_text(pdf_io: io.BytesIO) -> str:
+    """Extract text from a PDF file."""
     pdf_io.seek(0)
     reader = PdfReader(pdf_io)
     text = []
@@ -91,15 +102,19 @@ def extract_text(pdf_io: io.BytesIO) -> str:
         text.append(page_text)
     return "\n".join(text)
 
+
 # -----------------------------------
-# Routes
+# ROUTES
 # -----------------------------------
 @app.get("/health")
 def health():
+    """Health check endpoint."""
     return {"status": "ok"}
+
 
 @app.post("/convert/to-pdf")
 async def convert_to_pdf(files: List[UploadFile] = File(...)):
+    """Convert uploaded files (image/text/pdf) into a single merged PDF."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
@@ -123,8 +138,10 @@ async def convert_to_pdf(files: List[UploadFile] = File(...)):
     headers = {"Content-Disposition": 'attachment; filename="converted.pdf"'}
     return StreamingResponse(merged, media_type="application/pdf", headers=headers)
 
+
 @app.post("/convert/from-pdf")
 async def convert_from_pdf(file: UploadFile = File(...), format_type: str = Form("text")):
+    """Extract text or return the same PDF."""
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=415, detail="File must be a PDF")
 
@@ -133,14 +150,14 @@ async def convert_from_pdf(file: UploadFile = File(...), format_type: str = Form
         headers = {"Content-Disposition": f'attachment; filename="{file.filename}"'}
         return StreamingResponse(data, media_type="application/pdf", headers=headers)
 
-    # Extract text from PDF
     text = extract_text(data)
     out = io.BytesIO(text.encode("utf-8"))
     headers = {"Content-Disposition": 'attachment; filename="extracted.txt"'}
     return StreamingResponse(out, media_type="text/plain", headers=headers)
 
+
 # -----------------------------------
-# Run Server
+# RUN SERVER
 # -----------------------------------
 if __name__ == "__main__":
     import uvicorn
