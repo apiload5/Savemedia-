@@ -63,8 +63,10 @@ def image_to_pdf(img_bytes: io.BytesIO) -> io.BytesIO:
 
     pdf.image(tmp_path, 0, 0, w, h)
 
+    # ✅ Fixed: use dest='S' to get PDF as bytes
     out = io.BytesIO()
-    pdf.output(out)
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    out.write(pdf_bytes)
     out.seek(0)
 
     # Clean up temp file
@@ -79,8 +81,11 @@ def text_to_pdf(text: str) -> io.BytesIO:
     pdf.set_font("Arial", size=12)
     for line in text.splitlines():
         pdf.multi_cell(0, 10, line)
+
+    # ✅ Fixed: use dest='S' instead of direct BytesIO
     out = io.BytesIO()
-    pdf.output(out)
+    pdf_bytes = pdf.output(dest='S').encode('latin1')
+    out.write(pdf_bytes)
     out.seek(0)
     return out
 
