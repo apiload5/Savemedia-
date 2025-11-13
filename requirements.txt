@@ -1,6 +1,5 @@
 fastapi
-uvicorn[standard]
-python-multipart
+uvicorn
+fpdf2
+pypdf
 pillow
-fpdf
-PyPDF2
