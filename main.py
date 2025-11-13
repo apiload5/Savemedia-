@@ -5,7 +5,7 @@ from typing import List
 from fpdf import FPDF
 from PyPDF2 import PdfReader, PdfWriter
 from PIL import Image
-import io, os
+import io, os, tempfile
 
 # -----------------------------------
 # Config
@@ -15,7 +15,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB limit
 
 app = FastAPI(
     title="SaveMedia PDF API",
-    version="1.1",
+    version="1.2",
     description="🚀 Lightweight PDF Converter API for SaveMedia.online"
 )
 
@@ -50,18 +50,25 @@ def read_file(upload: UploadFile) -> io.BytesIO:
 
 
 def image_to_pdf(img_bytes: io.BytesIO) -> io.BytesIO:
-    """Convert image to PDF (fast and lightweight)"""
+    """Convert image to PDF (fixed for BytesIO)"""
     img = Image.open(img_bytes).convert("RGB")
     w, h = img.size
     pdf = FPDF(unit="pt", format=(w, h))
     pdf.add_page()
-    temp = io.BytesIO()
-    img.save(temp, format="JPEG")
-    temp.seek(0)
-    pdf.image(temp, 0, 0, w, h)
+
+    # Temporary file for FPDF (it only accepts file paths)
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
+        img.save(tmp_img, format="JPEG")
+        tmp_path = tmp_img.name
+
+    pdf.image(tmp_path, 0, 0, w, h)
+
     out = io.BytesIO()
     pdf.output(out)
     out.seek(0)
+
+    # Clean up temp file
+    os.remove(tmp_path)
     return out
 
 
@@ -114,6 +121,7 @@ def home():
         "docs": "/docs",
         "frontend": "https://pdf.savemedia.online"
     }
+
 
 @app.get("/health")
 def health():
